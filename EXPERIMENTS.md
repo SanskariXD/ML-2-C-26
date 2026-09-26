@@ -363,3 +363,14 @@ Full-data peak RAM, actual T4 E5 execution, real-data comparison and leaderboard
 unmeasured. The notebook must create a matching passing real-data comparison report before
 `--profile lowram --mode full` is allowed. Equal accuracy is the requested outcome of this
 execution refactor; it is not presented as a new modeling gain.
+
+
+## 2026-09-27 — Kaggle disk exhaustion recovery (execution-only)
+
+User runtime confirmed 0.00 GiB free / 19.50 GiB used while writing emb_idx.npy.tmp.npy. The unique encoding checkpoint was complete at 10,274,946 rows. Removing completed S1 embeddings was insufficient because the normal run recreates them before index scatter; do not repeat that cleanup.
+
+| Date | Change | Command | Before | After | Delta | Verdict |
+|---|---|---|---|---|---|---|
+| 2026-09-27 | Opt-in recovery installer: unique vectors plus int32 row lookup; preserve checkpoints; mmap disk guards; optional verified move to a distinct scratch filesystem | `python recovery/test_kaggle_storage_fix.py` | Original scatter reference | 10/10 tests pass; tested embedding values, dot products and rankings exactly equal | 0 numerical difference in fixture | Keep recovery utility; full-data score and full-run disk peak unmeasured |
+
+The recovery utility patches the stopped Kaggle checkout only when invoked. It does not lower candidate counts, select fewer training records, change embedding precision, or alter model parameters. The completed-index recovery test resumes at 71/71 without model inference. On the reported dataset the avoided second array is 7.382 GiB, replaced by a ~39.4 MiB row lookup. This resolves the embedding duplication; later full-run feature storage may still exceed a 19.5 GiB filesystem. Guards stop before selected large mmap allocations; they are not a guarantee against every storage failure. The optional scratch move requires a different filesystem and 50 GiB available after copying, verifies SHA-256 of every copied file, and keeps the original work path as a symlink. This headroom threshold is a heuristic, not a measured full-run requirement. Scratch is runtime-local; final output remains in /kaggle/working/output.
