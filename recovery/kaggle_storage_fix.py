@@ -250,6 +250,8 @@ def main():
     repo = a.repo
     if repo is None:
         matches = sorted({p.parent.parent.resolve() for p in Path('/kaggle/working').rglob('src/dense.py')})
+        if not matches:
+            matches = sorted({p.parent.parent.resolve() for p in Path('/kaggle/input').rglob('src/dense.py')})
         if len(matches) != 1:
             raise RuntimeError(f'Found {matches}; supply --repo with the directory containing src/dense.py')
         repo = matches[0]
@@ -266,6 +268,13 @@ def main():
                 size = partial.stat().st_blocks*512/2**30
                 partial.unlink()
                 print(f'Removed incomplete scatter only: {partial.name} ({size:.2f} GiB)')
+    if str(repo.resolve()).startswith('/kaggle/input/'):
+        target = Path('/kaggle/working/ber_runtime_patched')
+        target.mkdir(exist_ok=True)
+        for folder in ('src', 'scripts'):
+            shutil.copytree(repo/folder, target/folder, dirs_exist_ok=True)
+        repo = target
+        print('Copied read-only input code into a writable runtime directory.')
     patch_repo(repo)
     print('\nStorage available in THIS session:')
     for path in ('/kaggle/working', '/tmp'):
@@ -277,6 +286,8 @@ def main():
         moved = relocate_work(a.work, Path('/tmp/ber-kaggle-work'))
         if not moved:
             print('No qualifying larger scratch filesystem: compact storage installed, full-run capacity remains unverified.')
+    import json
+    Path('/kaggle/working/ber_storage_recovery.json').write_text(json.dumps(dict(repo=str(repo.resolve()), work=str(a.work.absolute()))))
     print('\nCompleted .npy files and all unique embedding checkpoints were preserved.')
     print('Resume with the SAME work directory and settings, without --force.')
     print('This fixes the duplicate embedding storage. Full-run feature storage is still measured at runtime.')
