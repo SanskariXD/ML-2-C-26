@@ -35,7 +35,7 @@ OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 python -m scripts.run_smoke --out runs/
 
 The smoke generator creates synthetic records, trains all three actual tree libraries, reloads the models, writes TSVs and invokes the supplied validator with ID checks. These are not official competition records. Synthetic `test` files deliberately mirror fixture inputs for plumbing checks and must not be presented as a test-generalization score. The split holdout is a separate correctness exercise, also synthetic.
 
-The Colab runbook is `notebooks/Plan_2.ipynb`. It runs smoke tests first and leaves real-data execution disabled until paths and the benchmark gate are reviewed.
+The Colab orchestrator is [`notebooks/Plan2_Training.ipynb`](notebooks/Plan2_Training.ipynb). It mounts Drive, clones this private repository using a hidden read token, extracts the official ZIP to temporary Colab storage, profiles every training row, then gates the 100k probe and full training on resource review. The original ZIP and completed checkpoints remain in Drive. `notebooks/Plan_2.ipynb` points to the new notebook.
 
 ## Real dataset workflow
 

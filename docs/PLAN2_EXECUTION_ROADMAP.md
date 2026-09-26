@@ -17,4 +17,4 @@ Promote changes only against a fixed full-catalog evaluation, with query-macro F
 
 Dependencies: phases 1→2→3 are hard gates. Phases 4→5→6 precede phase 7. Phase 8 is optional and requires lexical miss evidence. The current `notebooks/Plan_2.ipynb` is a smoke-first runbook; upgrade it as a CLI orchestrator when real-data paths are usable.
 
-**Current block:** the previously shared official dataset archive is 1,094,823,222 bytes. The connected Drive transfer endpoint refused it with a 268,435,456-byte limit. Supply extracted TSVs via an accessible workspace mount or a smaller set of separate archives; do not commit them. Until then phases 1 onward cannot honestly produce real-data artifacts.
+**Current execution path:** the official archive is 1,094,823,222 bytes. This agent's connected Drive transfer endpoint refused it with a 268,435,456-byte limit. Colab can mount the owner's Drive directly: `notebooks/Plan2_Training.ipynb` reads the ZIP there and extracts the TSVs to Colab's temporary disk. Phase 1 onward remains unexecuted until the user runs the notebook; the connector limit is not a Colab restriction.

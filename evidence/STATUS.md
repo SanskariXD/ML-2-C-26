@@ -9,6 +9,12 @@
 - **BLOCKED:** automatic upload review rejected one archived problem-statement PDF due to possible private communications/access links. GitHub contains the other 46 archived files. The original source archive and `reference/manifest.json` still identify it; no claim of complete remote snapshot.
 - Audit and staged dependencies: `docs/ASTRA_INITIAL_AUDIT.md`, `docs/PLAN2_EXECUTION_ROADMAP.md`.
 
+## Colab workflow preparation
+
+- **IMPLEMENTED:** `notebooks/Plan2_Training.ipynb` mounts Drive, clones this private repository with a hidden read token, extracts the official ZIP to temporary Colab storage, profiles all training TSVs, runs restartable 10k/100k resource probes, and provides explicit full-index, baseline, prediction and validator stages.
+- **TESTED_SYNTHETIC:** notebook JSON and cell syntax checked locally; dataset extraction, 240-query profile, and a 20-target probe exercised with a synthetic ZIP. Colab itself and the real competition data have not been run here.
+- **PLANNED:** run 10k/100k probes and decide whether the complete index fits actual Colab disk/RAM before enabling full training. Report no real metric until that run finishes.
+
 ## Completed in this session
 
 - Inspected the single uploaded archive and inventoried all 14 regular files with SHA-256 hashes. Preserved source materials unchanged, including original attribution.

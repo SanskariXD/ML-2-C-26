@@ -28,7 +28,10 @@ def profile_dataset(queries: str, targets: list[str], truth: str, out: str) -> d
     """
     outpath = Path(out)
     outpath.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(str(outpath / "profile_ids.sqlite"))
+    # This table is temporary working state. Rebuild it after an interrupted run.
+    ids_path = outpath / "profile_ids.sqlite"
+    ids_path.unlink(missing_ok=True)
+    db = sqlite3.connect(str(ids_path))
     db.execute("CREATE TABLE ids(id TEXT PRIMARY KEY, kind TEXT NOT NULL)")
     summaries: dict[str, dict] = {}
     try:
@@ -101,3 +104,4 @@ def profile_dataset(queries: str, targets: list[str], truth: str, out: str) -> d
         return result
     finally:
         db.close()
+        ids_path.unlink(missing_ok=True)
