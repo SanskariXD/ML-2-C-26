@@ -64,7 +64,7 @@ def lgb_params(cfg, names, monotone_set):
     p = dict(objective="binary", learning_rate=cfg.lgb_lr, num_leaves=cfg.lgb_leaves,
              min_data_in_leaf=cfg.lgb_min_leaf, feature_fraction=0.8, bagging_fraction=0.75,
              bagging_freq=1, lambda_l1=0.3, lambda_l2=1.5, min_gain_to_split=0.01,
-             max_bin=255, num_threads=os.cpu_count() or 4,
+             max_bin=255, num_threads=cfg.workers or os.cpu_count() or 4,
              # Histogram GBDT, row-wise layout (wide-enough rows, few columns), all cores.
              seed=cfg.seed, deterministic=True, force_row_wise=True, verbose=-1,
              metric=["binary_logloss", "auc"])
@@ -99,6 +99,7 @@ def train_cv(X, y, fold, fold_ids, cfg, names, monotone_set, tag):
         models[f] = lgb.Booster(model_file=path)
         imp = sorted(zip(names, b.feature_importance("gain")), key=lambda t: -t[1])[:15]
         LOG.info("  top gain: %s", ", ".join(f"{n}={g:.0f}" for n, g in imp))
+        del b, tr, va
     return models
 
 
@@ -194,7 +195,12 @@ def _labels(cfg, ck, s1_rows, idx_rows, P, gt_keys, n_idx_total):
 
 
 def train_all(cfg: Config) -> dict:
+    pred_chunk = min(PRED_CHUNK, cfg.feat_chunk) if cfg.low_memory else PRED_CHUNK
     from blocking import load_pairs
+    if cfg.low_memory:
+        from low_memory import stage2_stream as stage2_fn
+    else:
+        stage2_fn = stage2_matrix
     s1, idx, parts = load_split(cfg, "train", columns=["entity_id", "country", "ckey",
                                                        "n_core", "a_full", "a_nums"])
     n_s1, n_idx = len(s1), len(idx)
@@ -216,6 +222,14 @@ def train_all(cfg: Config) -> dict:
         meta[ck] = dict(P=P, y=y, qg=qg, ig=idx_rows[P["i"]], fold=fold_s1[qg],
                         use=(allowed is None or ck in allowed))
         LOG.info("  %r pairs=%d positives=%d", ck, len(y), int(y.sum()))
+        if cfg.low_memory:
+            from low_memory import spill, release
+            folder = os.path.join(cfg.work_dir, "scratch_meta", safe_name(ck))
+            for k, value in list(meta[ck].items()):
+                if isinstance(value, np.ndarray):
+                    meta[ck][k] = spill(value, folder, k)
+            meta[ck]["P"] = {k: spill(v, folder, "pair_"+k) for k,v in P.items()}
+            del P, y, qg
 
     # ---------- blocking diagnostics ----------
     tot_pos = sum(int(m["y"].sum()) for m in meta.values())
@@ -224,55 +238,70 @@ def train_all(cfg: Config) -> dict:
              sum(len(m["y"]) for m in meta.values()) / max(1, n_s1))
 
     # ---------- stage 1 ----------
-    with timed("stage1: assemble matrix"):
-        Xs, ys, fs, qs, bss, brs, dcs = [], [], [], [], [], [], []
-        for ck, m in meta.items():
-            if not m["use"]:
-                continue
-            sel = np.flatnonzero(np.isin(m["fold"], cfg.stage1_folds))
-            if len(sel) == 0:
-                continue
-            mm = load_features(cfg, "train", ck)
-            Xs.append(np.asarray(mm[sel], dtype=np.float32))
-            ys.append(m["y"][sel])
-            fs.append(m["fold"][sel])
-            qs.append(m["qg"][sel])
-            P = m["P"]
-            bss.append(P["bscore"][sel])
-            brs.append(P["brank"][sel])
-            dcs.append(P["dcos"][sel] if "dcos" in P else np.full(len(sel), np.nan, np.float32))
-        X, y, fold, qg = (np.concatenate(Xs), np.concatenate(ys), np.concatenate(fs),
-                          np.concatenate(qs))
-        bscore = np.concatenate(bss)
-        brank = np.concatenate(brs)
-        dcos = np.concatenate(dcs)
-        del Xs, bss, brs, dcs
-        keep = _subsample_hard_neg(y, bscore, brank, dcos, cfg.max_train_rows, cfg.seed)
-        if not keep.all():
-            X, y, fold = X[keep], y[keep], fold[keep]
-        LOG.info("stage1 matrix %s  pos_rate=%.4f  (%.2f GB)", X.shape, y.mean(), X.nbytes / 2**30)
+    if cfg.low_memory:
+        from low_memory import training_sequence
+        X, y, fold = training_sequence(meta, cfg, "stage1")
+    else:
+        with timed("stage1: assemble matrix"):
+            Xs, ys, fs, qs, bss, brs, dcs = [], [], [], [], [], [], []
+            for ck, m in meta.items():
+                if not m["use"]:
+                    continue
+                sel = np.flatnonzero(np.isin(m["fold"], cfg.stage1_folds))
+                if len(sel) == 0:
+                    continue
+                mm = load_features(cfg, "train", ck)
+                Xs.append(np.asarray(mm[sel], dtype=np.float32))
+                ys.append(m["y"][sel])
+                fs.append(m["fold"][sel])
+                qs.append(m["qg"][sel])
+                P = m["P"]
+                bss.append(P["bscore"][sel])
+                brs.append(P["brank"][sel])
+                dcs.append(P["dcos"][sel] if "dcos" in P else np.full(len(sel), np.nan, np.float32))
+            X, y, fold, qg = (np.concatenate(Xs), np.concatenate(ys), np.concatenate(fs),
+                              np.concatenate(qs))
+            bscore = np.concatenate(bss)
+            brank = np.concatenate(brs)
+            dcos = np.concatenate(dcs)
+            del Xs, bss, brs, dcs
+            keep = _subsample_hard_neg(y, bscore, brank, dcos, cfg.max_train_rows, cfg.seed)
+            if not keep.all():
+                X, y, fold = X[keep], y[keep], fold[keep]
+            LOG.info("stage1 matrix %s  pos_rate=%.4f  (%.2f GB)", X.shape, y.mean(), X.nbytes / 2**30)
     m1 = train_cv(X, y, fold, cfg.stage1_folds, cfg, ALL_FEATURES, MONOTONE_UP, "stage1")
     del X
 
     # ---------- stage-1 inference on all train pairs + stage-2 features ----------
-    idx_ncore_all = idx["n_core"].to_numpy(dtype=object)
-    idx_afull_all = idx["a_full"].to_numpy(dtype=object)
+    if cfg.low_memory:
+        from low_memory import ArrowStrings
+        idx_ncore_all = ArrowStrings(idx["n_core"])
+        idx_afull_all = ArrowStrings(idx["a_full"])
+    else:
+        idx_ncore_all = idx["n_core"].to_numpy(dtype=object)
+        idx_afull_all = idx["a_full"].to_numpy(dtype=object)
     for ck, m in meta.items():
         with timed(f"stage1 predict + stage2 features {ck!r}"):
             mm = load_features(cfg, "train", ck)
             n = mm.shape[0]
             p1 = np.empty(n, np.float32)
-            for s in range(0, n, PRED_CHUNK):
-                blk = np.asarray(mm[s:s + PRED_CHUNK], dtype=np.float32)
-                p1[s:s + PRED_CHUNK] = predict_rows(m1, blk, m["fold"][s:s + PRED_CHUNK])
+            for s in range(0, n, pred_chunk):
+                blk = np.asarray(mm[s:s + pred_chunk], dtype=np.float32)
+                p1[s:s + pred_chunk] = predict_rows(m1, blk, m["fold"][s:s + pred_chunk])
             m["p1"] = p1
+            if cfg.low_memory:
+                m["p1"] = spill(p1, os.path.join(cfg.work_dir,"scratch_meta",safe_name(ck)),"p1")
             idx_rows = parts[ck][1]
-            i_ncore = idx_ncore_all[idx_rows]
-            i_afull = idx_afull_all[idx_rows]
+            if cfg.low_memory:
+                i_ncore = ArrowStrings(idx_ncore_all.data.iloc[idx_rows])
+                i_afull = ArrowStrings(idx_afull_all.data.iloc[idx_rows])
+            else:
+                i_ncore = idx_ncore_all[idx_rows]
+                i_afull = idx_afull_all[idx_rows]
             s2_path = os.path.join(split_dir(cfg, "train"), f"s2_{safe_name(ck)}.npy")
             X2 = np.lib.format.open_memmap(s2_path, mode="w+", dtype=np.float16,
                                            shape=(n, len(S2_FEATURES)))
-            stage2_matrix(m["P"]["q"].astype(np.int64), m["P"]["i"].astype(np.int64),
+            stage2_fn(m["P"]["q"].astype(np.int64), m["P"]["i"].astype(np.int64),
                           p1, mm, i_ncore, i_afull, out=X2)
             X2.flush()
             del X2, mm
@@ -281,32 +310,36 @@ def train_all(cfg: Config) -> dict:
             _maybe_delete(cfg, feat_path(cfg, "train", ck))
 
     # ---------- stage 2 ----------
-    with timed("stage2: assemble matrix"):
-        Xs, ys, fs, qs, bss, brs, dcs = [], [], [], [], [], [], []
-        for ck, m in meta.items():
-            if not m["use"]:
-                continue
-            sel = np.flatnonzero(np.isin(m["fold"], cfg.stage2_folds))
-            X2 = np.load(os.path.join(split_dir(cfg, "train"), f"s2_{safe_name(ck)}.npy"),
-                         mmap_mode="r")
-            Xs.append(np.asarray(X2[sel], dtype=np.float32))
-            del X2
-            ys.append(m["y"][sel])
-            fs.append(m["fold"][sel])
-            qs.append(m["qg"][sel])
-            P = m["P"]
-            bss.append(P["bscore"][sel])
-            brs.append(P["brank"][sel])
-            dcs.append(P["dcos"][sel] if "dcos" in P else np.full(len(sel), np.nan, np.float32))
-        X, y, fold, qg = (np.concatenate(Xs), np.concatenate(ys), np.concatenate(fs),
-                          np.concatenate(qs))
-        bscore = np.concatenate(bss)
-        brank = np.concatenate(brs)
-        dcos = np.concatenate(dcs)
-        del Xs, bss, brs, dcs
-        keep = _subsample_hard_neg(y, bscore, brank, dcos, cfg.max_train_rows, cfg.seed + 1)
-        if not keep.all():
-            X, y, fold = X[keep], y[keep], fold[keep]
+    if cfg.low_memory:
+        from low_memory import training_sequence
+        X, y, fold = training_sequence(meta, cfg, "stage2")
+    else:
+        with timed("stage2: assemble matrix"):
+            Xs, ys, fs, qs, bss, brs, dcs = [], [], [], [], [], [], []
+            for ck, m in meta.items():
+                if not m["use"]:
+                    continue
+                sel = np.flatnonzero(np.isin(m["fold"], cfg.stage2_folds))
+                X2 = np.load(os.path.join(split_dir(cfg, "train"), f"s2_{safe_name(ck)}.npy"),
+                             mmap_mode="r")
+                Xs.append(np.asarray(X2[sel], dtype=np.float32))
+                del X2
+                ys.append(m["y"][sel])
+                fs.append(m["fold"][sel])
+                qs.append(m["qg"][sel])
+                P = m["P"]
+                bss.append(P["bscore"][sel])
+                brs.append(P["brank"][sel])
+                dcs.append(P["dcos"][sel] if "dcos" in P else np.full(len(sel), np.nan, np.float32))
+            X, y, fold, qg = (np.concatenate(Xs), np.concatenate(ys), np.concatenate(fs),
+                              np.concatenate(qs))
+            bscore = np.concatenate(bss)
+            brank = np.concatenate(brs)
+            dcos = np.concatenate(dcs)
+            del Xs, bss, brs, dcs
+            keep = _subsample_hard_neg(y, bscore, brank, dcos, cfg.max_train_rows, cfg.seed + 1)
+            if not keep.all():
+                X, y, fold = X[keep], y[keep], fold[keep]
     m2 = train_cv(X, y, fold, cfg.stage2_folds, cfg, S2_FEATURES, S2_MONOTONE_UP, "stage2")
     del X
 
@@ -316,10 +349,12 @@ def train_all(cfg: Config) -> dict:
         X2 = np.load(s2_path, mmap_mode="r")
         n = X2.shape[0]
         p2 = np.empty(n, np.float32)
-        for s in range(0, n, PRED_CHUNK):
-            blk = np.asarray(X2[s:s + PRED_CHUNK], dtype=np.float32)
-            p2[s:s + PRED_CHUNK] = predict_rows(m2, blk, m["fold"][s:s + PRED_CHUNK])
+        for s in range(0, n, pred_chunk):
+            blk = np.asarray(X2[s:s + pred_chunk], dtype=np.float32)
+            p2[s:s + pred_chunk] = predict_rows(m2, blk, m["fold"][s:s + pred_chunk])
         m["p2"] = p2
+        if cfg.low_memory:
+            m["p2"] = spill(p2, os.path.join(cfg.work_dir,"scratch_meta",safe_name(ck)),"p2")
         del X2
         # last use of this partition's stage-2 matrix in this run.
         _maybe_delete(cfg, s2_path)
@@ -333,6 +368,10 @@ def train_all(cfg: Config) -> dict:
     fq = fold_s1[q]
     s2mask_rows = np.isin(fq, cfg.stage2_folds)
 
+    if cfg.low_memory:
+        del meta, m, idx_ncore_all, idx_afull_all, idx
+        import gc
+        gc.collect()
     # ---------- calibration (isotonic on OOF p2) ----------
     from sklearn.isotonic import IsotonicRegression
     iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
@@ -402,7 +441,12 @@ def enforce_contract(cfg: Config) -> dict:
 
 
 def predict_test(cfg: Config):
+    pred_chunk = min(PRED_CHUNK, cfg.feat_chunk) if cfg.low_memory else PRED_CHUNK
     from blocking import load_pairs
+    if cfg.low_memory:
+        from low_memory import stage2_stream as stage2_fn
+    else:
+        stage2_fn = stage2_matrix
     from io_utils import (CAND_HEADER, MATCH_HEADER, run_official_validator, self_check,
                           write_id_lists)
     meta = load_json(os.path.join(model_dir(cfg), "meta.json"))
@@ -414,8 +458,13 @@ def predict_test(cfg: Config):
     from decide import adjust_p_housenum, first_housenum_arr
     q_hnum = first_housenum_arr(s1["a_nums"].to_numpy(dtype=object))
     i_hnum = first_housenum_arr(idx["a_nums"].to_numpy(dtype=object))
-    idx_ncore_all = idx["n_core"].to_numpy(dtype=object)
-    idx_afull_all = idx["a_full"].to_numpy(dtype=object)
+    if cfg.low_memory:
+        from low_memory import ArrowStrings
+        idx_ncore_all = ArrowStrings(idx["n_core"])
+        idx_afull_all = ArrowStrings(idx["a_full"])
+    else:
+        idx_ncore_all = idx["n_core"].to_numpy(dtype=object)
+        idx_afull_all = idx["a_full"].to_numpy(dtype=object)
     Q, I, PC = [], [], []
     for ck, (s1_rows, idx_rows) in parts.items():
         P = load_pairs(cfg, "test", ck)
@@ -425,18 +474,18 @@ def predict_test(cfg: Config):
         with timed(f"predict {ck!r} pairs={n:,}"):
             mm = load_features(cfg, "test", ck)
             p1 = np.empty(n, np.float32)
-            for s in range(0, n, PRED_CHUNK):
-                p1[s:s + PRED_CHUNK] = predict_rows(m1, np.asarray(mm[s:s + PRED_CHUNK],
+            for s in range(0, n, pred_chunk):
+                p1[s:s + pred_chunk] = predict_rows(m1, np.asarray(mm[s:s + pred_chunk],
                                                                    dtype=np.float32))
             s2_path = os.path.join(split_dir(cfg, "test"), f"s2_{safe_name(ck)}.npy")
             X2 = np.lib.format.open_memmap(s2_path, mode="w+", dtype=np.float16,
                                            shape=(n, len(S2_FEATURES)))
-            stage2_matrix(P["q"].astype(np.int64), P["i"].astype(np.int64), p1, mm,
+            stage2_fn(P["q"].astype(np.int64), P["i"].astype(np.int64), p1, mm,
                           idx_ncore_all[idx_rows], idx_afull_all[idx_rows], out=X2)
             p2 = np.empty(n, np.float32)
-            for s in range(0, n, PRED_CHUNK):
-                blk = np.asarray(X2[s:s + PRED_CHUNK], dtype=np.float32)
-                p2[s:s + PRED_CHUNK] = predict_rows(m2, blk)
+            for s in range(0, n, pred_chunk):
+                blk = np.asarray(X2[s:s + pred_chunk], dtype=np.float32)
+                p2[s:s + pred_chunk] = predict_rows(m2, blk)
             del X2, mm
             # single-pass inference: neither file is read again once p2 is computed.
             _maybe_delete(cfg, feat_path(cfg, "test", ck))
@@ -447,6 +496,8 @@ def predict_test(cfg: Config):
     q = np.concatenate(Q) if Q else np.zeros(0, np.int64)
     ig = np.concatenate(I) if I else np.zeros(0, np.int64)
     pc = np.concatenate(PC) if PC else np.zeros(0, np.float32)
+    if cfg.low_memory:
+        del Q, I, PC
     dcfg = meta["decision"]
     pc = adjust_p_housenum(
         pc, q, ig, q_hnum, i_hnum,

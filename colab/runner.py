@@ -1,4 +1,4 @@
-"""Colab orchestration around the unchanged BER pipeline (stdlib only).
+"""Colab orchestration for the standard and memory-saving BER execution paths.
 
 Completed stages are checkpointed to Drive. An interrupted stage is recomputed
 from the last complete checkpoint; partial memmaps are never treated as complete.
@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 import zipfile
 
 REPO = Path(__file__).resolve().parents[1]
@@ -175,7 +176,7 @@ class Checkpoints:
         (self.local / 'stage_running.json').unlink(missing_ok=True)
 
 
-def command(python, data, local, command_name, split, mode, batch, workers):
+def command(python, data, local, command_name, split, mode, batch, workers, profile="standard"):
     args = [python, '-u', str(BER / 'src/run.py'), command_name,
             '--data-dir', str(data), '--work-dir', str(local / 'work'),
             '--out-dir', str(local / 'output'), '--split', split,
@@ -183,6 +184,10 @@ def command(python, data, local, command_name, split, mode, batch, workers):
             '--dense', '--dense-batch', str(batch), '--workers', str(workers),
             '--feat-chunk', '1000000', '--join-budget-rows', '20000000',
             '--max-train-rows', '30000000', '--dev-frac', '0.03' if mode == 'dev' else '1.0']
+    if profile == "lowram":
+        args += ['--low-memory']
+        args[args.index('--feat-chunk') + 1] = '25000'
+        args[args.index('--join-budget-rows') + 1] = '500000'
     return args
 
 
@@ -191,6 +196,23 @@ def run_logged(cmd, path, env):
     with path.open('a', encoding='utf-8') as log:
         p = subprocess.Popen(cmd, cwd=BER, env=env, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
+        stopped = threading.Event()
+        peak = [0.0]
+        def monitor():
+            import psutil
+            while not stopped.wait(10):
+                try:
+                    proc = psutil.Process(p.pid)
+                    rss = sum(x.memory_info().rss for x in [proc] + proc.children(recursive=True)) / GIB
+                    peak[0] = max(peak[0], rss)
+                    available = psutil.virtual_memory().available / GIB
+                    line = f'[resources] process-tree RSS={rss:.2f} GiB peak={peak[0]:.2f} GiB available={available:.2f} GiB\n'
+                    print(line, end='', flush=True)
+                    log.write(line); log.flush()
+                except (psutil.Error, AttributeError, OSError):
+                    pass
+        watcher = threading.Thread(target=monitor, daemon=True)
+        watcher.start()
         try:
             for line in p.stdout:
                 print(line, end='', flush=True)
@@ -206,17 +228,25 @@ def run_logged(cmd, path, env):
                 os.killpg(p.pid, signal.SIGKILL)
                 p.wait()
             raise
+        finally:
+            stopped.set()
+            watcher.join(timeout=1)
         if rc:
             raise subprocess.CalledProcessError(rc, cmd)
 
 
 def main():
+    # Notebook stop/terminate must also stop detached training process groups.
+    def terminated(signum, frame):
+        raise KeyboardInterrupt('Colab runner terminated')
+    signal.signal(signal.SIGTERM, terminated)
     ap = argparse.ArgumentParser()
     ap.add_argument('--data', type=Path, required=True)
     ap.add_argument('--local', type=Path, required=True)
     ap.add_argument('--drive', type=Path, required=True)
     ap.add_argument('--mode', choices=['dev', 'full'], default='full')
     ap.add_argument('--batch', type=int, default=512)
+    ap.add_argument('--profile', choices=['standard', 'lowram'], default='standard')
     a = ap.parse_args()
     if a.batch < 1:
         ap.error('--batch must be positive')
@@ -226,8 +256,11 @@ def main():
         raise RuntimeError('Select a T4 GPU runtime. This pipeline does not support TPU.')
     ram = psutil.virtual_memory().total / GIB
     a.local.mkdir(parents=True, exist_ok=True)
-    if a.mode == 'full' and ram < 28:
-        raise RuntimeError(f'Only {ram:.1f} GiB system RAM. Full mode requires at least 28 GiB as a conservative preflight (not a guarantee). Select High-RAM if available; dev mode can test setup.')
+    # Only disposable process scratch; completed work is restored separately.
+    shutil.rmtree(a.local / 'temp', ignore_errors=True)
+    min_ram = 11 if a.profile == 'lowram' else 28
+    if a.mode == 'full' and ram < min_ram:
+        raise RuntimeError(f'Only {ram:.1f} GiB system RAM. Profile {a.profile} requires at least {min_ram} GiB as a conservative preflight (not a guarantee). Use --profile lowram for a 12.7 GiB T4 runtime.')
     print(f'GPU: {torch.cuda.get_device_name(0)} | System RAM: {ram:.1f} GiB', flush=True)
     hashes = {f: digest(a.data / f) for f in FILES}
     h = hashlib.sha256()
@@ -237,20 +270,31 @@ def main():
             h.update(p.read_bytes())
     # Batch size is deliberately excluded: it can be reduced after CUDA OOM.
     signature = {'data': hashes, 'code': h.hexdigest(), 'mode': a.mode,
-                 'profile': 'colab-t4-v1', 'python': sys.version.split()[0]}
+                 'profile': 'colab-t4-v1' if a.profile == 'standard' else 'colab-t4-lowram-v2', 'python': sys.version.split()[0]}
     cp = Checkpoints(a.local, a.drive, signature)
     cp.load()  # Reject incompatible cache before changing local files.
-    required = (60 if a.mode == 'full' else 10) * GIB
+    required = ((40 if a.profile == 'lowram' else 60) if a.mode == 'full' else 10) * GIB
     # Include existing work in capacity; a resume may already occupy much of it.
     occupied = sum(p.stat().st_size for sub in ('work', 'output')
                    for p in (a.local / sub).rglob('*') if p.is_file())
     if shutil.disk_usage(a.local).free + occupied < required:
         raise RuntimeError(f'Need {(required/GIB):.0f} GiB local capacity for this run. Free disk plus existing run files is insufficient.')
+    if a.profile == 'lowram' and a.mode == 'full':
+        gate = a.drive / 'low_memory_validation.json'
+        if not gate.is_file():
+            raise RuntimeError('Run the notebook comparison cell first; low_memory_validation.json is missing.')
+        validation = json.loads(gate.read_text())
+        vs = validation.get('signature', {})
+        if (not validation.get('passed') or vs.get('code') != signature['code']
+                or vs.get('data') != hashes or vs.get('fraction', 0) < 0.03):
+            raise RuntimeError('Regression gate failed or belongs to different code/data. Rerun the comparison cell.')
     completed = cp.restore()
-    workers = min(4, os.cpu_count() or 2)
+    workers = min(2 if a.profile == 'lowram' else 4, os.cpu_count() or 2)
     env = os.environ.copy()
     for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
         env[key] = str(workers)
+    env['TMPDIR'] = str(a.local / 'temp')
+    Path(env['TMPDIR']).mkdir(parents=True, exist_ok=True)
     env.update(CUDA_MODULE_LOADING='LAZY', KMP_DUPLICATE_LIB_OK='TRUE',
                PYTORCH_CUDA_ALLOC_CONF='max_split_size_mb:128')
     stages = [('prepare_train', 'prepare', 'train'),
@@ -267,7 +311,11 @@ def main():
         atomic_json(a.local / 'stage_running.json', {'stage': name})
         log = a.local / 'logs' / f'{name}.log'
         try:
-            run_logged(command(sys.executable, a.data, a.local, cmd, split, a.mode, a.batch, workers), log, env)
+            run_logged(command(sys.executable, a.data, a.local, cmd, split, a.mode, a.batch, workers, a.profile), log, env)
+            # Training has consumed these caches. Test inference needs only models.
+            if a.profile == 'lowram' and name == 'train':
+                shutil.rmtree(a.local / 'work/train', ignore_errors=True)
+                shutil.rmtree(a.local / 'work/scratch_meta', ignore_errors=True)
             cp.save(completed + [name])
             completed.append(name)
         finally:

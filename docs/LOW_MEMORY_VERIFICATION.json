@@ -1,0 +1,38 @@
+{
+  "date": "2026-09-27 IST",
+  "baseline_commit": "1be6c0646cb5d1af93424fe9b5838c4a9684af67",
+  "target_observed": {
+    "system_ram_gib": 12.7,
+    "gpu": "Tesla T4",
+    "free_local_disk_gib": 55.5
+  },
+  "synthetic_end_to_end": {
+    "train_entities": 900,
+    "test_entities": 250,
+    "no_dense_f05_before": 0.9627603820559228,
+    "no_dense_f05_after": 0.9627603820559228,
+    "synthetic_dense_f05_before": 0.9591594429711128,
+    "synthetic_dense_f05_after": 0.9591594429711128,
+    "candidate_feature_report_and_tsv_equality": true,
+    "dense_embeddings": "seeded synthetic vectors, not actual E5 GPU outputs"
+  },
+  "dataset_loading_probe": {
+    "rows": 1500000,
+    "features": 72,
+    "original_peak_rss_mib": 1032.25,
+    "low_peak_rss_mib": 507.28125,
+    "original_seconds": 5.727948427200317,
+    "low_seconds": 11.4063081741333,
+    "identical_binned_dataset_sha256": "95145db898d1d49bf2ae9e37493c3e068991c0013cf571d8e79daeb1b3bc86ce"
+  },
+  "unit_tests_passed": 12,
+  "wrapper_tests": "six stages, official validator, checkpoint publication and completed-stage resume; CPU with mock GPU and synthetic gate fixture",
+  "real_data_gate_test": "synthetic cached embeddings: exact candidate/features, nondecreasing scores, saved-report reuse passed",
+  "not_verified": [
+    "full dataset peak RAM/disk",
+    "actual T4 E5 execution",
+    "real 3% comparison",
+    "full runtime completion",
+    "leaderboard score"
+  ]
+}

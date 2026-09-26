@@ -1,3 +1,9 @@
+# Current Colab profile
+
+The notebook now defaults to **T4 + 12.7 GiB RAM**, `RUN_NAME='ber_lowram_v2'`, and a required real-data comparison before full mode. See [LOW_MEMORY.md](LOW_MEMORY.md) for the current memory strategy, resource limits and verification status. The guide below describes the original profile; its 28 GiB/60 GiB requirements apply to `--profile standard` only. The new profile plans for 40 GiB local capacity and at least 11 GiB system RAM, with no full-scale resource guarantee yet.
+
+---
+
 # Colab setup and recovery
 
 ## Dataset already configured

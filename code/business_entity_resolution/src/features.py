@@ -129,6 +129,10 @@ def _row_nnz(X):
 # --------------------------------------------------------------------------- #
 class PartitionFeaturizer:
     def __init__(self, Q: pd.DataFrame, I: pd.DataFrame, cfg, emb_q=None, emb_i=None):
+        if getattr(cfg, "low_memory", False):
+            from low_memory import init_featurizer
+            init_featurizer(self, Q, I, cfg, emb_q, emb_i)
+            return
         self.cfg = cfg
         self.W = -1
         w = max(1, (os.cpu_count() or 2))
@@ -353,8 +357,13 @@ def run_features(cfg, split: str, s1, idx, parts, emb=None) -> None:
             fz = PartitionFeaturizer(Q, I, cfg,
                                      emb[0] if emb is not None else None,
                                      emb[1] if emb is not None else None)
-            keep_nt = np.empty(n, np.float32)
-            keep_at = np.empty(n, np.float32)
+            if cfg.low_memory:
+                from low_memory import release
+                keep_nt = np.lib.format.open_memmap(tmp+'.nt', mode='w+', dtype=np.float32, shape=(n,))
+                keep_at = np.lib.format.open_memmap(tmp+'.at', mode='w+', dtype=np.float32, shape=(n,))
+            else:
+                keep_nt = np.empty(n, np.float32)
+                keep_at = np.empty(n, np.float32)
             j_nt, j_at = BASE_FEATURES.index("n_tset"), BASE_FEATURES.index("a_tset")
             step = cfg.feat_chunk
             for s in range(0, n, step):
@@ -365,14 +374,26 @@ def run_features(cfg, split: str, s1, idx, parts, emb=None) -> None:
                 keep_nt[sl] = F[:, j_nt]
                 keep_at[sl] = F[:, j_at]
                 mm[sl, :len(BASE_FEATURES)] = F.astype(np.float16)
+                if cfg.low_memory:
+                    release(mm, keep_nt, keep_at)
                 LOG.info("    chunk %d-%d done", sl.start, sl.stop)
-            ctx = context_features(P["q"].astype(np.int64), P["i"].astype(np.int64),
-                                   keep_nt, keep_at, P["bscore"].astype(np.float32))
-            C = np.column_stack([ctx[c] for c in CONTEXT_FEATURES]).astype(np.float16)
-            for s in range(0, n, step):
-                mm[s:s + step, len(BASE_FEATURES):] = C[s:s + step]
+            if cfg.low_memory:
+                from low_memory import write_context
+                del fz, Q, I, F
+                write_context(mm, P["q"], P["i"], keep_nt, keep_at, P["bscore"])
+                del keep_nt, keep_at
+                os.remove(tmp+'.nt'); os.remove(tmp+'.at')
+            else:
+                ctx = context_features(P["q"].astype(np.int64), P["i"].astype(np.int64),
+                                       keep_nt, keep_at, P["bscore"].astype(np.float32))
+                C = np.column_stack([ctx[c] for c in CONTEXT_FEATURES]).astype(np.float16)
+                for s in range(0, n, step):
+                    mm[s:s + step, len(BASE_FEATURES):] = C[s:s + step]
             mm.flush()
-            del mm, C, fz
+            if cfg.low_memory:
+                del mm
+            else:
+                del mm, C, fz
         os.replace(tmp, path)
 
 

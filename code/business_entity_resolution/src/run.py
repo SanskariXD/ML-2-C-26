@@ -84,6 +84,7 @@ def parse_args(argv=None):
                     help="blocking join RAM guard (raise on >=64GB RAM, e.g. 80000000)")
     ap.add_argument("--dense-adaptive", action=argparse.BooleanOptionalAction, default=None,
                     help="per-query dense k: easy/empty/non-Latin budgets (measure before promote)")
+    ap.add_argument("--low-memory", action="store_true", help="stream large allocations without reducing data or candidate budgets")
     return ap.parse_args(argv)
 
 
@@ -91,6 +92,10 @@ def build_config(a) -> Config:
     cfg = Config(data_dir=os.path.abspath(a.data_dir), work_dir=os.path.abspath(a.work_dir),
                  out_dir=os.path.abspath(a.out_dir), workers=a.workers, force=a.force,
                  dense=a.dense, keep_intermediates=a.keep_intermediates)
+    cfg.low_memory = a.low_memory
+    if cfg.low_memory:
+        cfg.feat_chunk = 25_000
+        cfg.join_budget_rows = 500_000
     if not a.validator:
         guess = os.path.join(os.path.dirname(cfg.data_dir), "utils", "validate_submission.py")
         cfg.validator = guess if os.path.isfile(guess) else ""

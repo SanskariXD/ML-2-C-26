@@ -342,3 +342,24 @@ Targets: **0.986** = top 10. **~0.999** = measured ceiling.
 - Before → after model score: **not measured; model implementation unchanged**. No accuracy delta claimed.
 - Verdict: retain execution migration. Full dataset/GPU/Drive behavior still requires the user's runtime.
 - Details: [migration record](docs/MIGRATION.md), [Colab guide](docs/COLAB_GUIDE.md).
+
+## 2026-09-27 IST — Colab 12.7 GiB execution refactor
+
+These are execution-equivalence experiments, not leaderboard improvements. The original
+1be6c0646cb5d1af93424fe9b5838c4a9684af67 checkout was the end-to-end control. No real dataset
+was downloaded or used in development. See `docs/LOW_MEMORY.md` for sources and limits.
+
+| Experiment | Command / fixture | Before | After | Delta | Verdict |
+|---|---|---:|---:|---:|---|
+| Streamed prep, keys/BM25/features, Sequence training, stage-2 context | Synthetic 900 train / 250 test entities; 80 GBM rounds; no dense; historical checkout vs low profile | holdout F0.5 0.9627603820559228 | 0.9627603820559228 | 0 | Keep execution change: identical candidates, features, reports and both TSV bytes |
+| Dense full-index isolation + hard-negative selection | `BER_BASELINE=<original checkout> BER_PARITY_WORK=<fresh dir> python colab/tests/parity_pipeline.py`; seeded synthetic 384-d embeddings, 3,000-row test-only training cap | holdout F0.5 0.9591594429711128 | 0.9591594429711128 | 0 | Keep: exact arrays, reports and both TSVs; production cap remains 30M |
+| Sequence Dataset construction memory | `python colab/tests/memory_probe.py original`, then `low`; 1,500,000 rows × 72 features, separate processes | peak RSS 1032.25 MiB; 5.73 s | 507.28125 MiB; 11.41 s | -524.97 MiB (~50.9%) | Keep: binary Dataset SHA256 identical (`95145db898d1d49bf2ae9e37493c3e068991c0013cf571d8e79daeb1b3bc86ce`); measures loading only |
+| Split dense index into target shards | Random vectors plus duplicate vectors, 259 queries × 2,051 targets, k=50 | Reference neighbor IDs | 233/12,950 positions differed in duplicate test | 1.8% differing positions | Revert: tie handling differs; replaced with complete preallocated IndexFlatIP worker |
+| Exact preallocated dense worker | `python colab/tests/test_low_memory.py`, random vectors and duplicate ties | Reference full IndexFlatIP | Identical neighbor IDs and float32 scores | 0 differences | Keep |
+| Parser/dev selection, BM25, feature/context functions, disk encoder dedupe | `python colab/tests/test_low_memory.py` | Reference implementation | 4 regression tests pass | 0 detected differences | Keep; malformed tabs, duplicate IDs, blank country, Unicode and empty address covered |
+| Wrapper stages and resume | `BER_TEST_PROFILE=lowram python colab/tests/integration_cpu.py` | 6 expected stages | 6 complete, validator PASS, resume runs 0 training stages | 0 repeats | Keep; mocked GPU and synthetic gate fixture, not real-data validation |
+
+Full-data peak RAM, actual T4 E5 execution, real-data comparison and leaderboard score remain
+unmeasured. The notebook must create a matching passing real-data comparison report before
+`--profile lowram --mode full` is allowed. Equal accuracy is the requested outcome of this
+execution refactor; it is not presented as a new modeling gain.

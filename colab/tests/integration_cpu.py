@@ -33,7 +33,11 @@ with tempfile.TemporaryDirectory() as td:
   c=base(*args,**kwargs); c[c.index('--dense')]='--no-dense'
   return c+['--bm25-k','0','--bm25-k-empty','0','--k-dense-script','0']
  runner.command=cpu_command
- sys.argv=['runner','--data',str(ds),'--local',str(t/'local'),'--drive',str(t/'drive'),'--mode','full']
+ profile=os.environ.get('BER_TEST_PROFILE','standard')
+ if profile=='lowram':
+  from validate_low_memory import signature
+  runner.atomic_json(t/'drive/low_memory_validation.json',dict(passed=True,signature=signature(ds,.03),synthetic_test_fixture=True))
+ sys.argv=['runner' ,'--data',str(ds),'--local',str(t/'local'),'--drive',str(t/'drive'),'--mode','full','--profile',profile]
  runner.main()
  cp=json.loads((t/'drive/checkpoint.json').read_text())
  assert len(cp['completed'])==6,cp['completed']

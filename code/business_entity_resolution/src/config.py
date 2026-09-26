@@ -15,6 +15,7 @@ class Config:
 
     # ---------------- runtime --------------
     workers: int = 0                  # 0 => os.cpu_count()
+    low_memory: bool = False          # execution only; no model/retrieval budget changes
     seed: int = 42
     force: bool = False               # recompute cached stages
     keep_intermediates: bool = False  # keep large per-partition feat_*/s2_*.npy after use

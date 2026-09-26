@@ -96,7 +96,7 @@ def _best_batch(model, texts_probe, candidates, dev: str) -> int:
 
 
 def _encode_unique_parallel(models, uniq, mm_u, resume_from, nu, batch, step, prog,
-                            t_start, *, is_mps: bool = False):
+                            t_start, *, is_mps: bool = False, release_pages: bool = False):
     """Encode uniq[resume_from:nu] into mm_u using one SentenceTransformer per device."""
     import torch
     from concurrent.futures import ThreadPoolExecutor
@@ -133,6 +133,9 @@ def _encode_unique_parallel(models, uniq, mm_u, resume_from, nu, batch, step, pr
 
         for s0, e in results:
             mm_u[s0:s0 + len(e)] = e.astype(np.float16)
+        if release_pages:
+            from low_memory import release
+            release(mm_u)
         done = min(nu, s + wave)
         _save_progress(prog, done)
         elapsed = max(1e-6, time.perf_counter() - t_start)
@@ -151,7 +154,11 @@ def build_embeddings(cfg, split: str, s1, idx):
     for tag, df in (("s1", s1), ("idx", idx)):
         path = os.path.join(d, f"emb_{tag}.npy")
         if not (os.path.exists(path) and not cfg.force):
-            _encode_to(path, _texts(df), cfg)
+            if cfg.low_memory:
+                from low_memory import EmbeddingTexts
+                _encode_to(path, EmbeddingTexts(df), cfg)
+            else:
+                _encode_to(path, _texts(df), cfg)
         out.append(np.load(path, mmap_mode="r"))
     return tuple(out)
 
@@ -205,7 +212,11 @@ def _encode_to(path, texts, cfg):
     os.environ.setdefault("VECLIB_MAXIMUM_THREADS", str(ncpu))
 
     n = len(texts)
-    uniq, inv = _unique_order(texts)
+    if cfg.low_memory:
+        from low_memory import unique_disk
+        uniq, inv = unique_disk(texts)
+    else:
+        uniq, inv = _unique_order(texts)
     nu = len(uniq)
     LOG.info("    dense dedup: %d rows -> %d unique texts (%.1f%%)",
              n, nu, 100.0 * nu / max(1, n))
@@ -267,7 +278,7 @@ def _encode_to(path, texts, cfg):
                f"on {devices} batch={batch}"):
         _encode_unique_parallel(
             models, uniq, mm_u, resume_from, nu, batch, step, prog, t_start,
-            is_mps=(dev == "mps"),
+            is_mps=(dev == "mps"), release_pages=cfg.low_memory,
         )
     mm_u.flush()
 
@@ -280,6 +291,9 @@ def _encode_to(path, texts, cfg):
         for s in range(0, n, scat_step):
             e = min(n, s + scat_step)
             mm[s:e] = mm_u[inv[s:e]]
+            if cfg.low_memory:
+                from low_memory import release
+                release(mm, mm_u, inv)
     mm.flush()
     del mm, mm_u
     for p in (tmp_u, prog, meta):

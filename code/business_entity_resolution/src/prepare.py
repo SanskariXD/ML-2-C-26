@@ -85,6 +85,9 @@ def _compact(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def prepare(cfg, split: str) -> None:
+    if getattr(cfg, "low_memory", False):
+        from prepare_stream import prepare_stream
+        return prepare_stream(cfg, split)
     d = split_dir(cfg, split)
     done = os.path.join(d, "partitions.pkl")
     if os.path.exists(done) and not cfg.force:
@@ -153,6 +156,11 @@ def prepare(cfg, split: str) -> None:
 
 def load_split(cfg, split: str, columns=None):
     d = split_dir(cfg, split)
+    if cfg.low_memory and columns is None:
+        from low_memory import ParquetFrame
+        with open(os.path.join(d, "partitions.pkl"), "rb") as f:
+            parts = pickle.load(f)
+        return ParquetFrame(os.path.join(d,"s1.parquet")), ParquetFrame(os.path.join(d,"idx.parquet")), parts
     # Arrow-backed strings stay compact; Python objects are materialised per partition only
     s1 = pd.read_parquet(os.path.join(d, "s1.parquet"), columns=columns,
                          dtype_backend="pyarrow")

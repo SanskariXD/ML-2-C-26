@@ -222,17 +222,31 @@ def block_partition(Q, I, cfg):
                  brank=np.zeros(0, np.int16))
     if nq == 0 or ni == 0:
         return empty
-    keys = build_keys(Q, I, cfg)
+    if cfg.low_memory:
+        import tempfile
+        from blocking_stream import keys_disk
+        from low_memory import spill, release
+        scratch = tempfile.TemporaryDirectory(prefix="keys-", dir=cfg.work_dir)
+        entries = keys_disk(Q, I, cfg, scratch.name)
+    else:
+        keys = build_keys(Q, I, cfg)
+        entries = keys.items()
     idxs = []
-    for t, (qr, qk, ir, ik) in keys.items():
+    for t, (qr, qk, ir, ik) in entries:
         name_only = t in (T_NP, T_NC)
         ti = _TypeIndex(t, qr, qk, ir, ik, ni,
                         cfg.max_df_name if name_only else cfg.max_df_pair,
                         cfg.max_pairs_per_key)
         LOG.info("    key %-3s q_keys=%10d idx_keys=%10d usable=%10d join_rows=%12d",
                  TYPE_NAMES[t], len(qk), len(ik), len(ti.cnt), int(ti.cnt.sum()))
+        if cfg.low_memory:
+            for name, value in list(vars(ti).items()):
+                if isinstance(value, np.ndarray):
+                    setattr(ti, name, spill(value, scratch.name, f"index{t}_{name}"))
+            release(qr, qk, ir, ik)
         idxs.append(ti)
-    del keys
+    if not cfg.low_memory:
+        del keys
     rows_q = sum(ti.rows_per_query(nq) for ti in idxs)
     chunks = _query_chunks(rows_q, cfg.join_budget_rows)
     out_q, out_i, out_s, out_b, out_r = [], [], [], [], []
@@ -476,6 +490,14 @@ def run_blocking(cfg, split: str, s1, idx, parts, emb=None) -> dict:
             stats[ck] = dict(n_s1=len(s1_rows), n_idx=len(idx_rows), pairs=len(z["q"]))
             continue
         with timed(f"block:{split}:{ck!r} S1={len(s1_rows):,} IDX={len(idx_rows):,}"):
+            dense_temp = None
+            if cfg.low_memory and emb is not None and len(s1_rows) and len(idx_rows):
+                import tempfile
+                from dense_exact_worker import isolated_knn
+                dense_temp = tempfile.TemporaryDirectory(prefix="dense-hits-", dir=cfg.work_dir)
+                budget = max(cfg.k_dense, cfg.k_dense_script,
+                             cfg.k_dense_empty if cfg.dense_adaptive else 0)
+                disk_dense = isolated_knn(cfg, *emb, s1_rows, idx_rows, budget, dense_temp.name)
             cols = BLOCK_COLS + (_TEXT_COLS if (use_bm25 or emb is not None) else [])
             Q = s1.iloc[s1_rows][cols].reset_index(drop=True)
             I = idx.iloc[idx_rows][cols].reset_index(drop=True)
@@ -485,7 +507,12 @@ def run_blocking(cfg, split: str, s1, idx, parts, emb=None) -> dict:
                 k_empty = int(getattr(cfg, "bm25_k_empty", 0) or 0)
                 k_take = max(int(cfg.bm25_k), k_empty)
                 i_addrs = I["business_address"].to_numpy(object)
-                bq, bi, bs = bm25_topk(
+                if cfg.low_memory:
+                    from blocking_stream import bm25_stream
+                    bm25_fn = bm25_stream
+                else:
+                    bm25_fn = bm25_topk
+                bq, bi, bs = bm25_fn(
                     Q["business_name"].to_numpy(object),
                     Q["business_address"].to_numpy(object),
                     I["business_name"].to_numpy(object),
@@ -500,6 +527,8 @@ def run_blocking(cfg, split: str, s1, idx, parts, emb=None) -> dict:
                 P = merge_extra(P, bq, bi, bs, cfg.k_key, T_BM25, sim_key=None)
                 LOG.info("  %r BM25 union: +%d raw hits -> %d pairs",
                          ck, len(bq), len(P["q"]))
+                if cfg.low_memory:
+                    del bq, bi, bs, i_addrs
             if emb is not None and len(s1_rows) and len(idx_rows):
                 from dense import knn_topk
                 eq, ei = emb
@@ -508,7 +537,10 @@ def run_blocking(cfg, split: str, s1, idx, parts, emb=None) -> dict:
                 k_empty_d = int(getattr(cfg, "k_dense_empty", 30) or 0)
                 k_easy = int(getattr(cfg, "k_dense_easy", 5) or 5)
                 k_take = max(cfg.k_dense, k_script, k_empty_d if adaptive else 0)
-                dq, di, ds = knn_topk(eq, ei, s1_rows, idx_rows, k_take)
+                if cfg.low_memory:
+                    dq, di, ds = disk_dense
+                else:
+                    dq, di, ds = knn_topk(eq, ei, s1_rows, idx_rows, k_take)
                 need_names = (k_script > cfg.k_dense) or adaptive
                 if need_names and len(dq):
                     if "business_name" not in Q.columns:
@@ -531,10 +563,27 @@ def run_blocking(cfg, split: str, s1, idx, parts, emb=None) -> dict:
                         dq, di, ds = _script_keep(dq, di, ds, Qn, In, cfg.k_dense, k_script)
                         LOG.info("  %r dense script-keep: %d -> %d", ck, n_before, len(dq))
                 P = merge_dense(P, dq, di, ds, cfg.k_key)
-            np.savez(path, **P)
+                if cfg.low_memory:
+                    if need_names and len(dq):
+                        del Qn, In, Qa, Ia
+                    del dq, di, ds
+            np.savez(path + ".tmp.npz", **P)
+            os.replace(path + ".tmp.npz", path)
+            if dense_temp is not None:
+                del disk_dense
+                dense_temp.cleanup()
             stats[ck] = dict(n_s1=len(s1_rows), n_idx=len(idx_rows), pairs=len(P["q"]))
             LOG.info("  %r: %d pairs (%.1f / S1)", ck, len(P["q"]),
                      len(P["q"]) / max(1, len(s1_rows)))
+            if cfg.low_memory:
+                del P, Q, I
+                import gc
+                gc.collect()
+                try:
+                    import ctypes
+                    ctypes.CDLL(None).malloc_trim(0)
+                except (AttributeError,OSError):
+                    pass
     return stats
 
 
