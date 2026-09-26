@@ -1,8 +1,0 @@
-ML Challenge 2026 — submission validator
-  test dir: /mnt/data/plan2_smoke_final/synthetic_data
-  required S1 entities: 360
-  valid S2/S3 match IDs: 1336
-  matching_results.tsv: 360 rows (54 empty, 306 non-empty).
-  candidate_pairs.tsv: 360 rows (0 empty, 360 non-empty).
-
-PASS — no blocking issues found. Safe to submit.
