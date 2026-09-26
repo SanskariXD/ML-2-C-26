@@ -233,6 +233,7 @@ Run this after examining the real holdout and locking the pair policy. It indexe
 """),
     code("""if RUN_TEST_PREDICTION:
     assert RUN_FULL_BASELINE and (DRIVE_RUNS / "baseline_v1/model/manifest.json").is_file()
+    from ml2.data import digest_file
     TEST_INDEX = WORK / "test_targets.sqlite"
     saved_test_index = DRIVE_RUNS / "indexes" / TEST_INDEX.name
     if saved_test_index.exists() and not TEST_INDEX.exists():
@@ -246,13 +247,25 @@ Run this after examining the real holdout and locking the pair policy. It indexe
         assert test_index.db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert [Path(s["path"]).name for s in test_index.metadata()["sources"]] == [
             "test_source2.tsv", "test_source3.tsv"]
+        assert [s["sha256"] for s in test_index.metadata()["sources"]] == [
+            digest_file(TEST / "test_source2.tsv"), digest_file(TEST / "test_source3.tsv")], (
+            "Saved test index belongs to different target files"
+        )
     finally:
         test_index.close()
     if not saved_test_index.exists():
         persist_file(TEST_INDEX, saved_test_index)
     prediction = WORK / "prediction_v1"
     saved_prediction = DRIVE_RUNS / prediction.name
-    if not saved_prediction.exists():
+    if saved_prediction.exists():
+        manifest = json.loads((saved_prediction / "prediction_manifest.json").read_text())
+        assert manifest["queries_sha256"] == digest_file(TEST / "test_source1.tsv"), (
+            "Saved prediction belongs to different test queries"
+        )
+        assert manifest["model_manifest_sha256"] == digest_file(DRIVE_RUNS / "baseline_v1/model/manifest.json"), (
+            "Saved prediction belongs to another model"
+        )
+    else:
         run("-m", "ml2", "predict", "--index", TEST_INDEX,
             "--queries", TEST / "test_source1.tsv", "--model", DRIVE_RUNS / "baseline_v1/model",
             "--mode", "pair", "--out", prediction)
