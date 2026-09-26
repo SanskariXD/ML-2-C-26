@@ -55,7 +55,9 @@ def threshold_sweep(truth: dict[str, set[str]], pairs: list[tuple[str, str, floa
     tp, fp = defaultdict(int), defaultdict(int)
     current = {q: float(not actual) for q, actual in truth.items()}
     total = sum(current.values())
-    best_score, best_threshold = total / len(truth), float(np.nextafter(1., 2.))
+    # No-score-accepted is a valid policy even when a calibrator returns 1.0.
+    # The previous threshold just below one accidentally accepted such pairs.
+    best_score, best_threshold = total / len(truth), float(np.nextafter(1., np.inf))
     ordered = sorted(pairs, key=lambda row: (-row[2], row[0], row[1]))
     i = 0
     while i < len(ordered):

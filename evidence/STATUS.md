@@ -1,5 +1,14 @@
 # Execution status — 26 September 2026
 
+## Latest milestone: repository import and correctness gate
+
+- **IMPLEMENTED:** restored the intended Plan 2 archive into its own GitHub repository, added `profile-data` for complete TSV/GT checking, and corrected the no-match threshold edge case (score exactly 1.0).
+- **TESTED_SYNTHETIC:** 37 local pytest cases pass after these changes, including profiling and threshold regression tests.
+- **TESTED_SYNTHETIC:** reran the 360-query smoke with 1,336 synthetic target records and 14,400 scored pairs; supplied validator returned exit 0. This is a plumbing check, not a challenge score.
+- **BLOCKED:** the previously shared official dataset ZIP is 1,094,823,222 bytes; the connected transfer rejected it above 268,435,456 bytes. No real data profile, full index, training or score is claimed. Raw dataset must stay out of GitHub.
+- **BLOCKED:** automatic upload review rejected one archived problem-statement PDF due to possible private communications/access links. GitHub contains the other 46 archived files. The original source archive and `reference/manifest.json` still identify it; no claim of complete remote snapshot.
+- Audit and staged dependencies: `docs/ASTRA_INITIAL_AUDIT.md`, `docs/PLAN2_EXECUTION_ROADMAP.md`.
+
 ## Completed in this session
 
 - Inspected the single uploaded archive and inventoried all 14 regular files with SHA-256 hashes. Preserved source materials unchanged, including original attribution.
@@ -24,7 +33,7 @@ The first index is correctness-oriented SQLite. Large posting lists/tables may b
 
 The default decision policy is independent-edge thresholding. Optional target-exclusive conflict resolution exists as a tested helper, but is not enabled in the production runner because it needs a separately calibrated full-query evaluation.
 
-## GitHub status
+## Earlier GitHub status (before this import)
 
 The existing GitHub connection successfully read `SanskariXD/Amazon-ML-C-26`. That repository was not modified. The native tool interface did not expose repository creation; a separate creation-capable connection was initiated but remained INITIATED after the authorization wait timed out. **No new remote repository or remote commit is claimed.** Intended new name: `ML-2-C-26`, private. `scripts/publish_github.sh` is a guarded manual publishing path after authorization.
 

@@ -4,7 +4,7 @@
 
 The uploaded repo's tree-ensemble idea is retained. Its missing modules, padded features and validation/threshold inconsistencies are replaced with an auditable first implementation. No other competitor code is imported. Plan 1 is not modified.
 
-**Status:** working synthetic-tested milestone; not a trained competition solution. New GitHub repository creation is pending authorization through a connector that supports repository creation. This local package is ready to publish as a private `SanskariXD/ML-2-C-26` repository after access is authorized.
+**Status:** working synthetic-tested milestone; not a trained competition solution. The Plan 2 implementation has been imported into `SanskariXD/ML-2-C-26`. The official dataset is not in the repository; see [initial audit](docs/ASTRA_INITIAL_AUDIT.md) and [roadmap](docs/PLAN2_EXECUTION_ROADMAP.md).
 
 ## Start here
 
@@ -40,6 +40,14 @@ The Colab runbook is `notebooks/Plan_2.ipynb`. It runs smoke tests first and lea
 ## Real dataset workflow
 
 The ZIP does not include the real TSVs. Reuse the already obtained official dataset; do not download business records from external sources. Replace the following local paths with the actual extracted official files. File names are explicit CLI arguments, not hardcoded discovery guesses.
+
+First profile the full extracted files. This checks duplicate IDs, GT coverage and target references while writing aggregate reports (no records or labels):
+
+```bash
+python -m ml2 profile-data --queries /data/train/train_source1.tsv \
+  --targets /data/train/train_source2.tsv /data/train/train_source3.tsv \
+  --truth /data/train/train_ground_truth.tsv --out runs/profile
+```
 
 First benchmark a sample index, including storage. A probe index is rejected by training/prediction so that it cannot accidentally become the evaluation target universe.
 
@@ -91,6 +99,8 @@ The supplied validator's `--check-ids` can use substantial RAM; the runner addit
 
 Original uploaded materials remain unchanged under `reference/source_snapshot`. The source methodology credits DataResolvers / Aamod; those credits are not replaced with the current user's name. The source has no LICENSE file even though its README makes license references. Preserve privately and resolve reuse/redistribution permission before making source materials public or submitting inherited work. A library's license does not by itself grant rights to a third-party repository.
 
+The source snapshot in GitHub excludes `docs/amazon_ml_challenge_problem_statement.pdf`: automatic upload review rejected that file. The archive manifest records the original file, but does not establish that every archived byte is present in GitHub. The provided validator and remaining source files are present.
+
 No passwords, tokens, real dataset files or competition-trained checkpoints are included. Never load a model from an untrusted source merely because it uses a familiar file extension. The new runner rejects the uploaded 55/72-feature artifact mismatch.
 
-To publish after GitHub authorization, use `bash scripts/publish_github.sh` in a shell with an authenticated GitHub CLI. It verifies the account, creates a private repo only, and refuses to overwrite an existing one. It does not modify Plan 1.
+The repository already exists. The original guarded creation script is retained as historical packaging provenance; do not run it against an existing repository.

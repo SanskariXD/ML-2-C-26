@@ -10,6 +10,7 @@ import time
 from .index import CandidateIndex
 from .pipeline import train, predict
 from .data import write_json
+from .profile import profile_dataset
 
 
 def main():
@@ -32,8 +33,15 @@ def main():
         p.add_argument("--" + arg, required=True)
     p.add_argument("--mode", choices=["pair", "care"], default="pair")
     p.add_argument("--batch-pairs", type=int, default=4096)
+    p = sub.add_parser("profile-data", help="Validate full local TSVs and write aggregate data profile")
+    p.add_argument("--queries", required=True)
+    p.add_argument("--targets", nargs="+", required=True)
+    p.add_argument("--truth", required=True)
+    p.add_argument("--out", required=True)
     a = parser.parse_args()
-    if a.command in ("index", "probe-index"):
+    if a.command == "profile-data":
+        result = profile_dataset(a.queries, a.targets, a.truth, a.out)
+    elif a.command in ("index", "probe-index"):
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
         if Path(a.out).exists():
             parser.error("Refusing to overwrite an index; provide a new --out")

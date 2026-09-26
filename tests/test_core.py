@@ -89,7 +89,7 @@ def test_threshold_sweep_matches_bruteforce(seed):
     gt = {f"q{i}": ({f"t{i}", f"missing{i}"} if i % 3 else set()) for i in range(12)}
     pairs = [(q, t, float(rng.choice([0., .1, .5, .9, 1.]))) for i, q in enumerate(gt) for t in [f"t{i}", f"n{i}"]]
     threshold, score = threshold_sweep(gt, pairs)
-    values = {np.nextafter(1., 2.)} | {p for _, _, p in pairs}
+    values = {np.nextafter(1., np.inf)} | {p for _, _, p in pairs}
     brute = max(macro_f05(gt, resolve(pairs, t, gt)) for t in values)
     assert score == pytest.approx(brute)
     assert macro_f05(gt, resolve(pairs, threshold, gt)) == pytest.approx(brute)
@@ -98,6 +98,15 @@ def test_threshold_sweep_matches_bruteforce(seed):
 def test_more_than_ten_matches_are_preserved():
     pairs = [("q", f"t{i}", .99) for i in range(15)]
     assert len(resolve(pairs, .8, ["q"])["q"]) == 15
+
+
+def test_threshold_can_reject_a_score_of_one():
+    truth = {"unmatched": set()}
+    pairs = [("unmatched", "S2-wrong", 1.0)]
+    threshold, score = threshold_sweep(truth, pairs)
+    assert threshold > 1.0
+    assert score == 1.0
+    assert resolve(pairs, threshold, truth) == truth
 
 
 def test_optional_ownership_tie_is_deterministic():
