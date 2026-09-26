@@ -21,7 +21,7 @@ Run from the top, one cell at a time. The original 1.09 GB dataset ZIP remains i
 
 **What this notebook does:** clone the private Plan 2 repository; install and test it; mount Drive; extract and validate the dataset; save a complete data profile; build 10k and optionally 100k index probes; then, after reviewing disk/RAM estimates, build the full target index and run one honest baseline. It never claims a real score until the real cells finish.
 
-For private GitHub access, add a **Colab Secret named `GITHUB_TOKEN`** with read access to `SanskariXD/ML-2-C-26`, or paste a token into the hidden prompt in the clone cell. The token is used only in memory during Git authentication. Never put it into a notebook cell or Git URL.
+The repository is private right now, so Colab needs a GitHub read token. If you make it public before running the notebook, the clone cell will work without a token. For private access, add a Colab Secret named `GITHUB_TOKEN`; never put a token in a code cell or Git URL.
 """),
     code("""from pathlib import Path
 import json, os, shutil, subprocess, sys
@@ -53,22 +53,23 @@ assert DRIVE_ZIP.is_file(), f"Dataset ZIP missing: {DRIVE_ZIP}. Edit DRIVE_ZIP a
 DRIVE_RUNS.mkdir(parents=True, exist_ok=True)
 print("Drive ZIP:", DRIVE_ZIP.name, round(DRIVE_ZIP.stat().st_size / 1024**3, 2), "GiB")
 """),
-    code("""# Clone/update the private repository without storing a token in Git config.
-import getpass, tempfile
+    code("""# Clone/update the repository. Public repositories need no token.
+import tempfile
 from google.colab import userdata
 try:
     token = userdata.get("GITHUB_TOKEN")
 except Exception:
     token = None
-if not token:
-    token = getpass.getpass("GitHub read token (hidden input): ")
-assert token, "A GitHub token with read access to this private repository is required."
 with tempfile.TemporaryDirectory() as private_dir:
-    askpass = Path(private_dir) / "askpass.sh"
-    askpass.write_text('#!/bin/sh\\ncase "$1" in *Username*) printf "%s\\\\n" "x-access-token";; *) printf "%s\\\\n" "$ML2_GITHUB_TOKEN";; esac\\n')
-    askpass.chmod(0o700)
     git_env = os.environ.copy()
-    git_env.update({"GIT_ASKPASS": str(askpass), "GIT_TERMINAL_PROMPT": "0", "ML2_GITHUB_TOKEN": token})
+    git_env["GIT_TERMINAL_PROMPT"] = "0"
+    if token:
+        askpass = Path(private_dir) / "askpass.sh"
+        askpass.write_text('#!/bin/sh\\ncase "$1" in *Username*) printf "%s\\\\n" "x-access-token";; *) printf "%s\\\\n" "$ML2_GITHUB_TOKEN";; esac\\n')
+        askpass.chmod(0o700)
+        git_env.update({"GIT_ASKPASS": str(askpass), "ML2_GITHUB_TOKEN": token})
+    else:
+        print("No token found; this clone requires the repository to be public.")
     try:
         if PROJECT.exists():
             assert (PROJECT / ".git").is_dir(), f"{PROJECT} exists but is not a Git checkout"
@@ -79,6 +80,7 @@ with tempfile.TemporaryDirectory() as private_dir:
         else:
             subprocess.run(["git", "clone", "--branch", "main", REPO_URL, str(PROJECT)], env=git_env, check=True)
     finally:
+        git_env.pop("ML2_GITHUB_TOKEN", None)
         del git_env, token
 print("Plan 2 commit:", subprocess.check_output(["git", "-C", str(PROJECT), "rev-parse", "HEAD"], text=True).strip())
 """),
